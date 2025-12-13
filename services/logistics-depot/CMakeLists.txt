@@ -15,6 +15,7 @@ add_executable(app
 
 target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/generated
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CURL_INCLUDE_DIRS}
 )
 

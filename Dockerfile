@@ -63,6 +63,9 @@ WORKDIR /app
 COPY --from=idlgen /gen/CombatMessages.c ./generated/
 COPY --from=idlgen /gen/CombatMessages.h ./generated/
 
+# Copy middleware header
+COPY include/traced_dds.hpp ./include/
+
 # Copy service source code
 COPY services/${SERVICE_NAME}/main.cpp .
 COPY services/${SERVICE_NAME}/CMakeLists.txt .

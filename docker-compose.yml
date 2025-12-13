@@ -18,6 +18,8 @@ services:
     network_mode: host
     environment:
       - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+      - TRACED_SERVICE_NAME=command-center
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
     depends_on:
       - jaeger
     restart: on-failure
@@ -33,6 +35,8 @@ services:
     network_mode: host
     environment:
       - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+      - TRACED_SERVICE_NAME=recon-unit
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
     depends_on:
       - jaeger
       - command-center
@@ -49,6 +53,8 @@ services:
     network_mode: host
     environment:
       - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+      - TRACED_SERVICE_NAME=logistics-depot
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
     depends_on:
       - jaeger
       - recon-unit
@@ -65,6 +71,8 @@ services:
     network_mode: host
     environment:
       - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+      - TRACED_SERVICE_NAME=tactical-display
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
     depends_on:
       - jaeger
       - logistics-depot

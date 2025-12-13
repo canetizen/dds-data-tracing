@@ -43,6 +43,8 @@ dds-data-tracing/
 ├── docker-compose.yml          # Service orchestration
 ├── Dockerfile                  # Multi-stage build (IDL gen → OTel SDK → App → Runtime)
 ├── Makefile                    # Build shortcuts
+├── include/
+│   └── traced_dds.hpp          # Tracing middleware library
 ├── shared/
 │   ├── CombatMessages.idl      # DDS message type definitions with TraceContext
 │   └── cyclonedds.xml          # CycloneDDS configuration
@@ -81,52 +83,113 @@ struct MissionOrder {
 };
 ```
 
-### 2. Root Span Creation (command-center)
+### 2. Tracing Middleware (`traced_dds.hpp`)
 
-The command-center creates root spans and embeds trace context into outgoing messages:
+The project uses a **zero-configuration** middleware library that completely automates trace context injection/extraction. Application code contains **no explicit tracing calls** - everything is handled transparently.
 
-```cpp
-// Start a new trace
-auto span = tracer->StartSpan("issue-mission");
+**Configuration via Environment Variables:**
 
-// Extract trace context
-auto span_context = span->GetContext();
-char trace_id_hex[33] = {0};
-char span_id_hex[17] = {0};
-span_context.trace_id().ToLowerBase16({trace_id_hex, 32});
-span_context.span_id().ToLowerBase16({span_id_hex, 16});
+| Variable | Description |
+|----------|-------------|
+| `TRACED_SERVICE_NAME` | Service name for tracing (required) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint (default: `http://localhost:4318/v1/traces`) |
 
-// Embed in DDS message
-msg.trace_ctx.trace_id = trace_id_hex;
-msg.trace_ctx.span_id = span_id_hex;
+**Key Components:**
+
+| Component | Description |
+|-----------|-------------|
+| `traced::Writer<T>` | DDS writer wrapper with automatic trace injection |
+| `traced::Reader<T>` | DDS reader wrapper with automatic trace extraction |
+| `TRACED_DDS_TYPE()` | Macro to register message types for tracing |
+| `TRACED_WRITER()` | Convenience macro to create traced writers |
+| `TRACED_READER()` | Convenience macro to create traced readers |
+
+**How It Works:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         traced::Writer.write()                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  1. Auto-initialize tracing on first use (from env vars)                │
+│  2. Continue active trace chain OR create root span                     │
+│  3. Inject trace_id/span_id into message.trace_ctx                      │
+│  4. Call dds_write() with enriched message                              │
+│  5. Auto-set OK status and end span                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         traced::Reader.take()                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│  1. Auto-initialize tracing on first use (from env vars)                │
+│  2. Call dds_take() to receive messages                                 │
+│  3. For each message:                                                   │
+│     a. Extract trace_id/span_id from message.trace_ctx                  │
+│     b. Create child span with parent context                            │
+│     c. Set thread-local context for automatic propagation               │
+│     d. Call user callback with message and span                         │
+│     e. Auto-set OK status and end span                                  │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3. Context Propagation (downstream services)
+### 3. Usage Examples
 
-Downstream services extract parent context and create child spans:
+**Complete Service Example (Zero Tracing Code!):**
 
 ```cpp
-// Extract trace context from incoming DDS message
-std::string trace_id_str = order->trace_ctx.trace_id;
-std::string parent_span_str = order->trace_ctx.span_id;
+#include "traced_dds.hpp"
+#include "CombatMessages.h"
 
-// Parse hex strings to TraceId/SpanId
-trace_api::TraceId trace_id;
-uint8_t trace_id_buf[16];
-for (int j = 0; j < 16; j++) {
-    sscanf(trace_id_str.c_str() + j*2, "%2hhx", &trace_id_buf[j]);
+// Register message types for tracing
+TRACED_DDS_TYPE(combat_MissionOrder);
+TRACED_DDS_TYPE(combat_ReconReport);
+
+int main() {
+    // Create DDS participant - NO tracing initialization needed!
+    dds_entity_t participant = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
+
+    // Create traced writer/reader
+    auto writer = TRACED_WRITER(combat_MissionOrder, participant, "MissionOrderTopic");
+    auto reader = TRACED_READER(combat_ReconReport, participant, "ReconReportTopic");
+
+    // ... business logic only, no tracing code!
+
+    dds_delete(participant);
+    return 0;
 }
-trace_id = trace_api::TraceId(trace_id_buf);
-
-// Create parent span context
-auto parent_ctx = trace_api::SpanContext(trace_id, parent_span_id,
-    trace_api::TraceFlags(trace_api::TraceFlags::kIsSampled), true);
-
-// Start child span with parent context
-trace_api::StartSpanOptions opts;
-opts.parent = parent_ctx;
-auto span = tracer->StartSpan("execute-recon", opts);
 ```
+
+**Publishing (Root Span):**
+
+```cpp
+combat_MissionOrder order;
+// ... fill order fields ...
+
+// Automatically creates span, injects trace context, publishes
+writer.write(order, "issue-mission");
+```
+
+**Subscribing and Forwarding:**
+
+```cpp
+// Callback receives: message and span for optional attributes
+reader.take("execute-recon", [&](combat_MissionOrder& order, traced::trace_api::Span& span) {
+    // Span already created as child of incoming trace!
+    span.SetAttribute("mission.type", order.mission_type);
+
+    // Process message...
+
+    // Forward to next service - trace context automatically propagated!
+    writer.write(report, "send-report");
+
+    // NO need to set status - middleware handles it automatically!
+});
+```
+
+**Key Features:**
+- **Zero initialization** - tracing auto-initializes on first Writer/Reader use
+- **Zero shutdown** - cleanup handled automatically via static destructor
+- **Zero status management** - OK status set automatically after callback
+- **Automatic propagation** - `writer.write()` inside `reader.take()` continues the trace chain via thread-local context
 
 ### 4. Trace Flow
 
@@ -216,11 +279,12 @@ Notice how all log lines share the same trace prefix (`7c469062`), indicating th
 
 ### OpenTelemetry Exporter
 
-Each service exports traces via OTLP HTTP to Jaeger:
+Configured via environment variables in `docker-compose.yml`:
 
-```cpp
-otlp::OtlpHttpExporterOptions opts;
-opts.url = "http://localhost:4318/v1/traces";
+```yaml
+environment:
+  - TRACED_SERVICE_NAME=my-service
+  - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
 ```
 
 ## Cleanup
