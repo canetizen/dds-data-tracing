@@ -1,0 +1,71 @@
+services:
+  # Jaeger - Distributed Tracing
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: jaeger
+    network_mode: host
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  # Command Center Service (CycloneDDS)
+  command-center:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: command-center
+    image: dds-data-tracing/command-center
+    container_name: command-center
+    network_mode: host
+    environment:
+      - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+    depends_on:
+      - jaeger
+    restart: on-failure
+
+  # Reconnaissance Unit Service (CycloneDDS)
+  recon-unit:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: recon-unit
+    image: dds-data-tracing/recon-unit
+    container_name: recon-unit
+    network_mode: host
+    environment:
+      - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+    depends_on:
+      - jaeger
+      - command-center
+    restart: on-failure
+
+  # Logistics Depot Service (CycloneDDS)
+  logistics-depot:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: logistics-depot
+    image: dds-data-tracing/logistics-depot
+    container_name: logistics-depot
+    network_mode: host
+    environment:
+      - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+    depends_on:
+      - jaeger
+      - recon-unit
+    restart: on-failure
+
+  # Tactical Display Service (CycloneDDS)
+  tactical-display:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: tactical-display
+    image: dds-data-tracing/tactical-display
+    container_name: tactical-display
+    network_mode: host
+    environment:
+      - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+    depends_on:
+      - jaeger
+      - logistics-depot
+    restart: on-failure

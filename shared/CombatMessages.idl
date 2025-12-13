@@ -1,0 +1,90 @@
+// Combat Management System DDS Message Types
+// OpenTelemetry Trace Context embedded in headers
+
+module combat {
+
+    // Trace Context - W3C Trace Context standard
+    struct TraceContext {
+        string trace_id;        // 32 hex characters (128-bit)
+        string span_id;         // 16 hex characters (64-bit)
+        string parent_span_id;  // Parent span ID
+        octet trace_flags;      // Sampling flag (01 = sampled)
+    };
+
+    // Mission Order from Command Center
+    struct MissionOrder {
+        // Trace header
+        TraceContext trace_ctx;
+
+        // Message metadata
+        string source_service;
+        int64 timestamp_ns;
+        int32 sequence_num;
+
+        // Payload
+        string mission_id;
+        string mission_type;     // RECON, STRIKE, SUPPLY, EVAC
+        string priority;         // LOW, MEDIUM, HIGH, CRITICAL
+        string target_zone;      // Alpha, Bravo, Charlie, Delta
+        float target_lat;
+        float target_lon;
+        string commander_id;
+    };
+
+    // Reconnaissance Report
+    struct ReconReport {
+        // Trace header
+        TraceContext trace_ctx;
+
+        // Message metadata
+        string source_service;
+        int64 timestamp_ns;
+
+        // Payload
+        string mission_id;
+        string report_id;
+        string unit_id;
+        boolean target_confirmed;
+        int32 enemy_count;
+        string threat_level;     // NONE, LOW, MEDIUM, HIGH, EXTREME
+        string terrain_type;     // URBAN, FOREST, DESERT, MOUNTAIN
+        string intel_details;    // JSON format intel data
+    };
+
+    // Supply Request/Update
+    struct SupplyUpdate {
+        // Trace header
+        TraceContext trace_ctx;
+
+        // Message metadata
+        string source_service;
+        int64 timestamp_ns;
+
+        // Payload
+        string mission_id;
+        string supply_type;      // AMMO, FUEL, MEDICAL, FOOD
+        string action;           // DISPATCH, DELIVERED, REQUESTED
+        string depot_location;   // DEPOT_A, DEPOT_B, DEPOT_C
+        int32 quantity;
+        int32 current_stock;
+        boolean low_stock_alert;
+    };
+
+    // Combat Alert
+    struct CombatAlert {
+        // Trace header
+        TraceContext trace_ctx;
+
+        // Message metadata
+        string source_service;
+        int64 timestamp_ns;
+
+        // Payload
+        string alert_id;
+        string alert_type;       // ENEMY_SPOTTED, MISSION_FAILED, CASUALTIES, AIR_RAID
+        string severity;         // WARNING, CRITICAL, EMERGENCY
+        string affected_zone;
+        string message;
+        string details;          // JSON format details
+    };
+};
