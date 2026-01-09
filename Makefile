@@ -1,8 +1,8 @@
 .PHONY: up down logs clean rebuild status
 
-# Tum servisleri baslat
+# Start all services.
 up:
-	docker compose up --build -d
+	docker compose up --build
 	@echo ""
 	@echo ""
 	@echo "📊 Jaeger UI: http://localhost:16686"

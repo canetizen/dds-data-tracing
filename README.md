@@ -8,6 +8,10 @@ This project demonstrates how to implement end-to-end distributed tracing in a D
 
 ## Architecture
 
+The project contains two demo systems:
+
+### 1. Combat Management System (Original)
+
 ```
 ┌─────────────────┐     MissionOrderTopic      ┌─────────────────┐
 │  command-center │ ─────────────────────────► │   recon-unit    │
@@ -21,13 +25,44 @@ This project demonstrates how to implement end-to-end distributed tracing in a D
 │ tactical-display│ ◄───────────────────────── │ logistics-depot │
 │   (Monitoring)  │                            │  (Child Spans)  │
 └─────────────────┘                            └─────────────────┘
-        ▲
-        │         MissionOrderTopic
-        │         ReconReportTopic
-        └──────── SupplyUpdateTopic ───────────────────┘
 ```
 
+### 2. Track Fusion System (Fan-In Tracing Demo)
+
+Demonstrates **fan-in trace correlation** where multiple independent traces converge into a single fused trace:
+
+```
+┌──────────────┐
+│ radar-sensor │──── trace AAA ────┐
+│  (RADAR-1)   │                   │
+└──────────────┘                   │
+                                   │
+┌──────────────┐                   │      ┌──────────────┐      ┌────────────────┐
+│  esm-sensor  │──── trace BBB ────┼─────►│ track-fusion │─────►│ track-consumer │
+│   (ESM-2)    │                   │      │ (trace TTT)  │      │  (child span)  │
+└──────────────┘                   │      └──────────────┘      └────────────────┘
+                                   │             │
+┌──────────────┐                   │             │ Creates NEW trace with
+│ optik-sensor │──── trace CCC ────┘             │ links to source traces
+│  (OPTIK-3)   │                                 │
+└──────────────┘                                 ▼
+                                          
+                                    Jaeger shows:
+                                    ├── fuse-tracks (root)
+                                    │   ├── receive-RADAR [link→AAA]
+                                    │   ├── receive-ESM [link→BBB]
+                                    │   ├── receive-OPTIK [link→CCC]
+                                    │   ├── correlate
+                                    │   └── publish-tactical
+                                    │       └── emit-tactical-track
+                                    └── process-tactical (consumer)
+```
+
+**Key Concept:** When multiple sensors detect the same target, their independent traces are **linked** (not parented) to a new fusion trace. This preserves sensor autonomy while enabling end-to-end visibility.
+
 ## Services
+
+### Combat Management Services
 
 | Service | Role | DDS Topics |
 |---------|------|------------|
@@ -36,31 +71,38 @@ This project demonstrates how to implement end-to-end distributed tracing in a D
 | **logistics-depot** | Manages supply dispatching | Subscribes: `ReconReportTopic`, Publishes: `SupplyUpdateTopic` |
 | **tactical-display** | Monitors all operations | Subscribes: All topics |
 
+### Track Fusion Services
+
+| Service | Role | DDS Topics |
+|---------|------|------------|
+| **radar-sensor** | Publishes radar detections | Publishes: `SourceTrackTopic` |
+| **esm-sensor** | Publishes ESM detections | Publishes: `SourceTrackTopic` |
+| **optik-sensor** | Publishes optical detections | Publishes: `SourceTrackTopic` |
+| **track-fusion** | Fuses source tracks into tactical tracks | Subscribes: `SourceTrackTopic`, Publishes: `TacticalTrackTopic` |
+| **track-consumer** | Consumes tactical tracks | Subscribes: `TacticalTrackTopic` |
+
 ## Project Structure
 
 ```
 dds-data-tracing/
 ├── docker-compose.yml          # Service orchestration
-├── Dockerfile                  # Multi-stage build (IDL gen → OTel SDK → App → Runtime)
+├── Dockerfile                  # Multi-stage build
 ├── Makefile                    # Build shortcuts
 ├── include/
 │   └── traced_dds.hpp          # Tracing middleware library
 ├── shared/
-│   ├── CombatMessages.idl      # DDS message type definitions with TraceContext
+│   ├── CombatMessages.idl      # DDS message definitions
 │   └── cyclonedds.xml          # CycloneDDS configuration
 └── services/
     ├── command-center/         # Mission order issuer
-    │   ├── main.cpp
-    │   └── CMakeLists.txt
     ├── recon-unit/             # Reconnaissance processor
-    │   ├── main.cpp
-    │   └── CMakeLists.txt
     ├── logistics-depot/        # Supply management
-    │   ├── main.cpp
-    │   └── CMakeLists.txt
-    └── tactical-display/       # Central monitoring
-        ├── main.cpp
-        └── CMakeLists.txt
+    ├── tactical-display/       # Central monitoring
+    ├── radar-sensor/           # Radar track source
+    ├── esm-sensor/             # ESM track source
+    ├── optik-sensor/           # Optical track source
+    ├── track-fusion/           # Multi-sensor fusion
+    └── track-consumer/         # Tactical track consumer
 ```
 
 ## How Tracing Works
@@ -191,7 +233,63 @@ reader.take("execute-recon", [&](combat_MissionOrder& order, traced::trace_api::
 - **Zero status management** - OK status set automatically after callback
 - **Automatic propagation** - `writer.write()` inside `reader.take()` continues the trace chain via thread-local context
 
-### 4. Trace Flow
+### 4. Fan-In Tracing (Track Fusion)
+
+The Track Fusion system demonstrates a more complex tracing pattern where **multiple independent traces converge**:
+
+```cpp
+// track-fusion/main.cpp - Simplified example
+
+// 1. Collect source tracks from multiple sensors
+std::vector<traced::TraceLink> links;
+for (const auto& track : collected_tracks) {
+    links.push_back(track.link);  // Extract trace links
+}
+
+// 2. Create NEW root span with links to all source traces
+auto [fuse_span, scope] = traced::create_linked_span("fuse-tracks", links);
+
+// 3. Create child spans for each processing phase
+{
+    auto [recv_span, s] = traced::create_child_span("receive-RADAR");
+    // ... process radar data
+    recv_span->End();
+}
+
+{
+    auto [corr_span, s] = traced::create_child_span("correlate");
+    // ... fusion algorithm
+    corr_span->End();
+}
+
+// 4. Publish tactical track - continues the trace
+writer.write(tactical_track, "emit-tactical-track");
+
+fuse_span->End();
+```
+
+**Jaeger Visualization:**
+
+```
+track-fusion: fuse-tracks ──────────────────────────────── 20ms
+│
+│  Tags:
+│    link.0.trace_id = "abc123..."  ← Click to jump to radar trace
+│    link.0.sensor_id = "RADAR-1"
+│    link.1.trace_id = "def456..."  ← Click to jump to ESM trace
+│    link.1.sensor_id = "ESM-2"
+│
+├── receive-RADAR ────── 11μs
+├── receive-ESM ──────── 8μs
+├── receive-OPTIK ────── 14μs
+├── correlate ────────── 10ms
+└── publish-tactical ─── 1ms
+    └── emit-tactical-track ── 100μs
+        │
+        └── track-consumer: process-tactical ── 5ms
+```
+
+### 5. Trace Flow (Linear)
 
 ```
 command-center                recon-unit               logistics-depot          tactical-display
@@ -244,6 +342,8 @@ docker compose logs -f
 
 ## Example Output
 
+### Combat Management System
+
 ```
 [ORDER] RECON | Zone: Alpha | Priority: HIGH | ID: MSN-1734112800-0 | trace: 7c469062
 [RECON] Mission: RECON | Zone: Alpha | Priority: HIGH | trace: 7c469062
@@ -252,7 +352,33 @@ docker compose logs -f
 [DISPLAY] NEW MISSION: RECON | Zone: Alpha | Priority: HIGH | trace: 7c469062
 ```
 
-Notice how all log lines share the same trace prefix (`7c469062`), indicating they belong to the same distributed trace.
+### Track Fusion System
+
+```
+[RADAR] Track R-1 | Pos: 40.12, 33.05 | Alt: 8500m | Conf: 0.89
+[ESM] Track E-1 | Pos: 40.15, 33.08 | Alt: 8200m | Conf: 0.75
+[OPTIK] Track O-1 | Pos: 40.11, 33.04 | Alt: 8600m | Conf: 0.92
+
+[COLLECT] RADAR track R-1 | Pos: 40.12, 33.05
+[COLLECT] ESM track E-1 | Pos: 40.15, 33.08
+[COLLECT] OPTIK track O-1 | Pos: 40.11, 33.04
+
+[FUSION] ══════════════════════════════════════════
+[FUSION] Tactical Track: TT-001
+[FUSION] Sources: RADAR-1,ESM-2,OPTIK-3
+[FUSION] Position: 40.1267, 33.0567 | Alt: 8433m
+[FUSION] Classification: HOSTILE | Confidence: 0.92
+[FUSION] ══════════════════════════════════════════
+
+[CONSUMER] ════════════════════════════════════════
+[CONSUMER] Received Tactical Track: TT-001
+[CONSUMER] From sources: RADAR-1,ESM-2,OPTIK-3
+[CONSUMER] Position: 40.1267, 33.0567 | Alt: 8433m
+[CONSUMER] Classification: HOSTILE | Confidence: 0.92
+[CONSUMER] ════════════════════════════════════════
+```
+
+Notice how all log lines share the same trace prefix, indicating they belong to the same distributed trace.
 
 ## Technology Stack
 

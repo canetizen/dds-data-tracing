@@ -77,3 +77,93 @@ services:
       - tracing-jaeger
       - logistics-depot
     restart: on-failure
+  # ============ Track Fusion System ============
+
+  # Radar Sensor - publishes source tracks
+  radar-sensor:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: radar-sensor
+    image: dds-data-tracing/radar-sensor
+    container_name: radar-sensor
+    network_mode: host
+    environment:
+      - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+      - TRACED_SERVICE_NAME=radar-sensor
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+    depends_on:
+      - tracing-jaeger
+    restart: on-failure
+
+  # ESM Sensor - publishes source tracks
+  esm-sensor:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: esm-sensor
+    image: dds-data-tracing/esm-sensor
+    container_name: esm-sensor
+    network_mode: host
+    environment:
+      - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+      - TRACED_SERVICE_NAME=esm-sensor
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+    depends_on:
+      - tracing-jaeger
+    restart: on-failure
+
+  # Optik Sensor - publishes source tracks
+  optik-sensor:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: optik-sensor
+    image: dds-data-tracing/optik-sensor
+    container_name: optik-sensor
+    network_mode: host
+    environment:
+      - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+      - TRACED_SERVICE_NAME=optik-sensor
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+    depends_on:
+      - tracing-jaeger
+    restart: on-failure
+
+  # Track Fusion - collects source tracks, fuses them, publishes tactical tracks
+  track-fusion:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: track-fusion
+    image: dds-data-tracing/track-fusion
+    container_name: track-fusion
+    network_mode: host
+    environment:
+      - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+      - TRACED_SERVICE_NAME=track-fusion
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+    depends_on:
+      - tracing-jaeger
+      - radar-sensor
+      - esm-sensor
+      - optik-sensor
+    restart: on-failure
+
+  # Track Consumer - receives tactical tracks
+  track-consumer:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: track-consumer
+    image: dds-data-tracing/track-consumer
+    container_name: track-consumer
+    network_mode: host
+    environment:
+      - CYCLONEDDS_URI=file:///shared/cyclonedds.xml
+      - TRACED_SERVICE_NAME=track-consumer
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+    depends_on:
+      - tracing-jaeger
+      - track-fusion
+    restart: on-failure

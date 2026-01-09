@@ -87,4 +87,52 @@ module combat {
         string message;
         string details;          // JSON format details
     };
+
+    // ============ Track Fusion System ============
+
+    // Source Track - Raw sensor tracks from individual sensors
+    struct SourceTrack {
+        // Trace header
+        TraceContext trace_ctx;
+
+        // Message metadata
+        string sensor_id;        // "RADAR-1", "ESM-2", "OPTIK-3"
+        string sensor_type;      // RADAR, ESM, OPTIK
+        int64 timestamp_ns;
+
+        // Track data
+        string source_track_id;  // Unique track ID from sensor
+        float position_lat;
+        float position_lon;
+        float altitude_m;
+        float heading_deg;
+        float speed_mps;
+        float confidence;        // 0.0 - 1.0 detection confidence
+        string classification;   // UNKNOWN, FRIEND, HOSTILE, NEUTRAL
+    };
+
+    // Tactical Track - Fused track from multiple sensors
+    struct TacticalTrack {
+        // Trace header
+        TraceContext trace_ctx;
+
+        // Message metadata
+        string fusion_service_id;
+        int64 timestamp_ns;
+
+        // Fused track data
+        string tactical_track_id;   // Fused track ID (e.g., "TT-001")
+        float position_lat;
+        float position_lon;
+        float altitude_m;
+        float heading_deg;
+        float speed_mps;
+        float confidence;           // Combined confidence
+        string classification;      // Best classification from sources
+
+        // Fusion metadata - which sources contributed
+        int32 num_sources;
+        string contributing_sensors;    // Comma-separated: "RADAR-1,ESM-2,OPTIK-3"
+        string contributing_track_ids;  // Comma-separated source track IDs
+    };
 };

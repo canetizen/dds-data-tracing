@@ -25,6 +25,7 @@
 #include <memory>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "dds/dds.h"
 
@@ -51,6 +52,13 @@ inline bool g_initialized = false;
 // Thread-local active trace context for automatic propagation
 inline thread_local std::string g_active_trace_id;
 inline thread_local std::string g_active_span_id;
+
+// Structure to hold trace context for span links
+struct TraceLink {
+    std::string trace_id;
+    std::string span_id;
+    std::string sensor_id;  // Optional: for logging/attributes
+};
 
 namespace internal {
 
@@ -196,6 +204,11 @@ public:
         }
 
         auto scope = g_tracer->WithActiveSpan(span);
+        
+        // Auto-add trace metadata as span attributes
+        span->SetAttribute("messaging.system", "dds");
+        span->SetAttribute("messaging.operation", "send");
+        
         inject(msg, span);
 
         dds_return_t ret = dds_write(writer_, &msg);
@@ -299,6 +312,16 @@ public:
                 g_active_trace_id = internal::trace_id_buf;
                 g_active_span_id = internal::span_id_buf;
 
+                // Auto-add trace metadata as span attributes
+                span->SetAttribute("messaging.system", "dds");
+                span->SetAttribute("messaging.operation", "receive");
+                if (!trace_id_str.empty()) {
+                    span->SetAttribute("messaging.source_trace_id", trace_id_str);
+                }
+                if (!span_id_str.empty()) {
+                    span->SetAttribute("messaging.source_span_id", span_id_str);
+                }
+
                 // Call user callback with message and span
                 callback(*msg, *span);
 
@@ -314,6 +337,17 @@ public:
         }
 
         return processed;
+    }
+
+    /**
+     * Simplified take - callback receives only the message (no span parameter needed)
+     * Tracing is still fully automatic behind the scenes
+     */
+    template<typename Callback>
+    int take_simple(const std::string& span_name, Callback&& callback) {
+        return take(span_name, [&callback](T& msg, trace_api::Span&) {
+            callback(msg);
+        });
     }
 
     dds_entity_t get() { return reader_; }
@@ -343,5 +377,101 @@ private:
 // Create traced reader
 #define TRACED_READER(MsgType, participant, topic_name) \
     traced::Reader<MsgType, decltype(MsgType##_desc)>(participant, topic_name, MsgType##_desc)
+
+// ============ Span Links Support for Fusion ============
+
+/**
+ * Create a new root span with links to multiple source traces.
+ * This is used for fusion scenarios where multiple independent traces 
+ * converge into a single new trace.
+ * 
+ * Note: OpenTelemetry C++ v1.12 doesn't support span links directly.
+ * We store link info as span attributes for visibility in Jaeger.
+ * 
+ * Usage:
+ *   std::vector<TraceLink> links = {...};
+ *   auto [span, scope] = create_linked_span("fuse-tracks", links);
+ *   // do fusion work...
+ *   span->End();
+ */
+inline std::pair<opentelemetry::nostd::shared_ptr<trace_api::Span>, trace_api::Scope> 
+create_linked_span(const std::string& span_name, const std::vector<TraceLink>& links) {
+    internal::ensure_init();
+    
+    trace_api::StartSpanOptions opts;
+    
+    auto span = g_tracer->StartSpan(span_name, {}, opts);
+    auto scope = g_tracer->WithActiveSpan(span);
+    
+    // Store link info as span attributes (workaround for no native link support)
+    span->SetAttribute("links.count", (int64_t)links.size());
+    
+    int link_idx = 0;
+    for (const auto& link : links) {
+        if (!link.trace_id.empty() && !link.span_id.empty()) {
+            std::string prefix = "link." + std::to_string(link_idx) + ".";
+            span->SetAttribute(prefix + "trace_id", link.trace_id);
+            span->SetAttribute(prefix + "span_id", link.span_id);
+            if (!link.sensor_id.empty()) {
+                span->SetAttribute(prefix + "sensor_id", link.sensor_id);
+            }
+            link_idx++;
+        }
+    }
+    
+    // Set active context for child spans
+    auto ctx = span->GetContext();
+    internal::trace_id_to_hex(ctx.trace_id(), internal::trace_id_buf);
+    internal::span_id_to_hex(ctx.span_id(), internal::span_id_buf);
+    g_active_trace_id = internal::trace_id_buf;
+    g_active_span_id = internal::span_id_buf;
+    
+    return {span, std::move(scope)};
+}
+
+/**
+ * Create a child span under the current active trace.
+ * Used for measuring sub-operations within a fusion process.
+ */
+inline std::pair<opentelemetry::nostd::shared_ptr<trace_api::Span>, trace_api::Scope>
+create_child_span(const std::string& span_name) {
+    internal::ensure_init();
+    
+    trace_api::StartSpanOptions opts;
+    
+    if (!g_active_trace_id.empty() && !g_active_span_id.empty()) {
+        auto trace_id = internal::hex_to_trace_id(g_active_trace_id.c_str());
+        auto parent_span = internal::hex_to_span_id(g_active_span_id.c_str());
+        
+        auto parent_ctx = trace_api::SpanContext(trace_id, parent_span,
+            trace_api::TraceFlags(trace_api::TraceFlags::kIsSampled), true);
+        opts.parent = parent_ctx;
+    }
+    
+    auto span = g_tracer->StartSpan(span_name, opts);
+    auto scope = g_tracer->WithActiveSpan(span);
+    
+    // Update active context
+    auto ctx = span->GetContext();
+    internal::trace_id_to_hex(ctx.trace_id(), internal::trace_id_buf);
+    internal::span_id_to_hex(ctx.span_id(), internal::span_id_buf);
+    g_active_trace_id = internal::trace_id_buf;
+    g_active_span_id = internal::span_id_buf;
+    
+    return {span, std::move(scope)};
+}
+
+/**
+ * Extract trace link info from a message with trace context
+ */
+template<typename T>
+inline TraceLink extract_trace_link(const T& msg, const std::string& sensor_id = "") {
+    TraceLink link;
+    const auto& tc = internal::TraceContextAccessor<T>::get(msg);
+    link.trace_id = tc.trace_id ? tc.trace_id : "";
+    link.span_id = tc.span_id ? tc.span_id : "";
+    link.sensor_id = sensor_id;
+    return link;
+}
 
 } // namespace traced
