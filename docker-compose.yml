@@ -1,8 +1,8 @@
 services:
-  # Jaeger - Distributed Tracing
-  jaeger:
+  # tracing-jaeger - Distributed Tracing
+  tracing-jaeger:
     image: jaegertracing/all-in-one:1.52
-    container_name: jaeger
+    container_name: tracing-jaeger
     network_mode: host
     environment:
       - COLLECTOR_OTLP_ENABLED=true
@@ -21,7 +21,7 @@ services:
       - TRACED_SERVICE_NAME=command-center
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
     depends_on:
-      - jaeger
+      - tracing-jaeger
     restart: on-failure
 
   # Reconnaissance Unit Service (CycloneDDS)
@@ -38,7 +38,7 @@ services:
       - TRACED_SERVICE_NAME=recon-unit
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
     depends_on:
-      - jaeger
+      - tracing-jaeger
       - command-center
     restart: on-failure
 
@@ -56,7 +56,7 @@ services:
       - TRACED_SERVICE_NAME=logistics-depot
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
     depends_on:
-      - jaeger
+      - tracing-jaeger
       - recon-unit
     restart: on-failure
 
@@ -74,6 +74,6 @@ services:
       - TRACED_SERVICE_NAME=tactical-display
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
     depends_on:
-      - jaeger
+      - tracing-jaeger
       - logistics-depot
     restart: on-failure
